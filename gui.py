@@ -116,7 +116,7 @@ class MainFrame(wx.Frame):
         self.voice_choice.Bind(wx.EVT_CHOICE, self.on_voice)
         main.Add(self.voice_choice, 0, wx.EXPAND | wx.ALL, 5)
 
-        main.Add(wx.StaticText(self.panel, label="Archivo de audio de referencia (IDEAL: 3 a 5 segundos máximo)"))
+        main.Add(wx.StaticText(self.panel, label="Archivo de audio de referencia (IDEAL: 10 a 15 segundos máximo)"))
         self.variant_choice = wx.Choice(self.panel)
         self.variant_choice.Bind(wx.EVT_CHOICE, self.on_variant)
         main.Add(self.variant_choice, 0, wx.EXPAND | wx.ALL, 5)
@@ -142,8 +142,8 @@ class MainFrame(wx.Frame):
         main.Add(self.lang, 0, wx.EXPAND | wx.ALL, 5)
 
         # PARÁMETROS
-        main.Add(wx.StaticText(self.panel, label="Steps (16 es ideal para velocidad y calidad)"))
-        self.steps = wx.SpinCtrl(self.panel, value="16", min=4, max=64)
+        main.Add(wx.StaticText(self.panel, label="Steps (32 es ideal para velocidad y calidad)"))
+        self.steps = wx.SpinCtrl(self.panel, value="32", min=4, max=64)
         self.bind_accessible(self.steps, "Steps")
         main.Add(self.steps, 0, wx.ALL, 5)
 
