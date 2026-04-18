@@ -1,4 +1,4 @@
-import os
+﻿import os
 import sys
 import threading
 import time
@@ -169,6 +169,27 @@ class MainFrame(wx.Frame):
         self.bind_accessible(self.speed, "Speed")
         main.Add(self.speed, 0, wx.ALL, 5)
 
+        # PARÁMETROS AVANZADOS (afectan prosodia y fluidez)
+        main.Add(wx.StaticText(self.panel, label="t_shift (desplazamiento temperatura. Default: 0.1)"))
+        self.t_shift = wx.SpinCtrlDouble(self.panel, value="0.1", min=0, max=2, inc=0.01)
+        self.bind_accessible(self.t_shift, "t_shift")
+        main.Add(self.t_shift, 0, wx.ALL, 5)
+
+        main.Add(wx.StaticText(self.panel, label="Position temperature (afecta prosodia. Default: 5.0)"))
+        self.position_temperature = wx.SpinCtrlDouble(self.panel, value="5.0", min=0.1, max=10, inc=0.1)
+        self.bind_accessible(self.position_temperature, "Position temperature")
+        main.Add(self.position_temperature, 0, wx.ALL, 5)
+
+        main.Add(wx.StaticText(self.panel, label="Class temperature (afecta pronunciación. Default: 0.0)"))
+        self.class_temperature = wx.SpinCtrlDouble(self.panel, value="0.0", min=0, max=2, inc=0.01)
+        self.bind_accessible(self.class_temperature, "Class temperature")
+        main.Add(self.class_temperature, 0, wx.ALL, 5)
+
+        main.Add(wx.StaticText(self.panel, label="Layer penalty factor (regularización. Default: 5.0)"))
+        self.layer_penalty_factor = wx.SpinCtrlDouble(self.panel, value="5.0", min=0, max=20, inc=0.1)
+        self.bind_accessible(self.layer_penalty_factor, "Layer penalty factor")
+        main.Add(self.layer_penalty_factor, 0, wx.ALL, 5)
+
         # BOTÓN
         self.btn = wx.Button(self.panel, label="Generar audio", size=(-1, 40))
         self.btn.Bind(wx.EVT_BUTTON, self.on_generate)
@@ -315,7 +336,11 @@ class MainFrame(wx.Frame):
             "preprocess": self.preprocess.GetValue(),
             "postprocess": self.postprocess.GetValue(),
             "speed": self.speed.GetValue(),
-            "lang": self.lang.GetStringSelection()
+            "lang": self.lang.GetStringSelection(),
+            "t_shift": self.t_shift.GetValue(),
+            "position_temperature": self.position_temperature.GetValue(),
+            "class_temperature": self.class_temperature.GetValue(),
+            "layer_penalty_factor": self.layer_penalty_factor.GetValue()
         }
 
         threading.Thread(
@@ -374,6 +399,10 @@ class MainFrame(wx.Frame):
             config = OmniVoiceGenerationConfig(
                 num_step=settings['steps'],
                 guidance_scale=settings['guidance'],
+                t_shift=settings['t_shift'],
+                layer_penalty_factor=settings['layer_penalty_factor'],
+                position_temperature=settings['position_temperature'],
+                class_temperature=settings['class_temperature'],
                 denoise=settings['denoise'],
                 preprocess_prompt=settings['preprocess'],
                 postprocess_output=settings['postprocess'],
@@ -432,3 +461,5 @@ if __name__ == "__main__":
     app = wx.App()
     MainFrame().Show()
     app.MainLoop()
+
+
