@@ -141,10 +141,49 @@ class MainFrame(wx.Frame):
 
         main.Add(self.lang, 0, wx.EXPAND | wx.ALL, 5)
 
-        # PARÁMETROS
-        main.Add(wx.StaticText(self.panel, label="Steps (32 es ideal para velocidad y calidad)"))
+
+        main.Add(wx.StaticText(self.panel, label="Speed (1.0 = Normal)"))
+        self.speed = wx.SpinCtrlDouble(self.panel, value="1.0", min=0.5, max=2.0, inc=0.1)
+        self.bind_accessible(self.speed, "Speed")
+        main.Add(self.speed, 0, wx.ALL, 5)
+
+        # --- PARÁMETROS DINÁMICOS (desde omnivoice.py) ---
+        self.config_controls = {}
+
+        # Importar dataclasses para introspección
+        import dataclasses
+        config_fields = dataclasses.fields(OmniVoiceGenerationConfig)
+
+        for field in config_fields:
+            field_name = field.name
+            default_val = field.default
+            
+            # Etiqueta
+            label = f"{field_name.replace(chr(95), ' ').title()} (Default: {default_val})"
+            
+            if field.type == bool:
+                ctrl = wx.CheckBox(self.panel, label=label)
+                ctrl.SetValue(bool(default_val))
+            elif field.type in (int, float):
+                # Definir rangos genéricos seguros
+                if isinstance(default_val, int):
+                    ctrl = wx.SpinCtrlDouble(self.panel, value=str(default_val), min=0.0, max=1000.0, inc=1.0)
+                    ctrl.SetDigits(0)
+                else:
+                    ctrl = wx.SpinCtrlDouble(self.panel, value=str(default_val), min=0.0, max=10.0, inc=0.01)
+                    ctrl.SetDigits(2)
+            else:
+                continue # Salta tipos no soportados (como listas)
+
+            self.bind_accessible(ctrl, field_name)
+            main.Add(ctrl, 0, wx.ALL, 5)
+            self.config_controls[field_name] = ctrl
+        # ----------------------------------------------
+
+        # Parámetros de inferencia (no están en Config pero sí en OmniVoice)
+        main.Add(wx.StaticText(self.panel, label="Steps (32 es ideal)"))
         self.steps = wx.SpinCtrl(self.panel, value="32", min=4, max=64)
-        self.bind_accessible(self.steps, "Steps")
+        self.bind_accessible(self.steps, "Pasos de inferencia")
         main.Add(self.steps, 0, wx.ALL, 5)
 
         main.Add(wx.StaticText(self.panel, label="Guidance scale (CFG. Default: 2.0)"))
@@ -152,50 +191,12 @@ class MainFrame(wx.Frame):
         self.bind_accessible(self.guidance, "Guidance scale")
         main.Add(self.guidance, 0, wx.ALL, 5)
 
-        self.denoise = wx.CheckBox(self.panel, label="Denoise (Reduce ruido de fondo)")
-        self.denoise.SetValue(True)
-        main.Add(self.denoise, 0, wx.ALL, 5)
-
-        self.preprocess = wx.CheckBox(self.panel, label="elimina los silencios que pueda tener el archivo desde el que se clona")
-        self.preprocess.SetValue(True) 
-        main.Add(self.preprocess, 0, wx.ALL, 5)
-
-        self.postprocess = wx.CheckBox(self.panel, label="Postprocess output (postprocesa el archivo generado)")
-        self.postprocess.SetValue(True)
-        main.Add(self.postprocess, 0, wx.ALL, 5)
-
-        main.Add(wx.StaticText(self.panel, label="Speed (1.0 = Normal)"))
-        self.speed = wx.SpinCtrlDouble(self.panel, value="1.0", min=0.5, max=2.0, inc=0.1)
-        self.bind_accessible(self.speed, "Speed")
-        main.Add(self.speed, 0, wx.ALL, 5)
-
-        # PARÁMETROS AVANZADOS (afectan prosodia y fluidez)
-        main.Add(wx.StaticText(self.panel, label="t_shift (desplazamiento temperatura. Default: 0.1)"))
-        self.t_shift = wx.SpinCtrlDouble(self.panel, value="0.1", min=0, max=2, inc=0.01)
-        self.bind_accessible(self.t_shift, "t_shift")
-        main.Add(self.t_shift, 0, wx.ALL, 5)
-
-        main.Add(wx.StaticText(self.panel, label="Position temperature (afecta prosodia. Default: 5.0)"))
-        self.position_temperature = wx.SpinCtrlDouble(self.panel, value="5.0", min=0.1, max=10, inc=0.1)
-        self.bind_accessible(self.position_temperature, "Position temperature")
-        main.Add(self.position_temperature, 0, wx.ALL, 5)
-
-        main.Add(wx.StaticText(self.panel, label="Class temperature (afecta pronunciación. Default: 0.0)"))
-        self.class_temperature = wx.SpinCtrlDouble(self.panel, value="0.0", min=0, max=2, inc=0.01)
-        self.bind_accessible(self.class_temperature, "Class temperature")
-        main.Add(self.class_temperature, 0, wx.ALL, 5)
-
-        main.Add(wx.StaticText(self.panel, label="Layer penalty factor (regularización. Default: 5.0)"))
-        self.layer_penalty_factor = wx.SpinCtrlDouble(self.panel, value="5.0", min=0, max=20, inc=0.1)
-        self.bind_accessible(self.layer_penalty_factor, "Layer penalty factor")
-        main.Add(self.layer_penalty_factor, 0, wx.ALL, 5)
-
-        # BOTÓN
+        # BOTÓN GENERAR
+        main.Add(wx.StaticText(self.panel, label=""))
         self.btn = wx.Button(self.panel, label="Generar audio", size=(-1, 40))
         self.btn.Bind(wx.EVT_BUTTON, self.on_generate)
-        self.btn.Disable()
-        main.Add(self.btn, 0, wx.EXPAND | wx.ALL, 10)
-
+        main.Add(self.btn, 0, wx.ALL, 5)
+        
         # LOG
         self.log = wx.TextCtrl(self.panel, style=wx.TE_MULTILINE | wx.TE_READONLY)
         main.Add(self.log, 1, wx.EXPAND | wx.ALL, 5)
@@ -326,21 +327,28 @@ class MainFrame(wx.Frame):
         self.btn.Disable()
         self.btn.SetLabel("Generando... Espera")
         
+        # Collect dynamic config values
+        gen_kwargs = {"speed": self.speed.GetValue(), "lang": self.lang.GetStringSelection(), "steps": self.steps.GetValue(), "guidance_scale": self.guidance.GetValue()}
+        
+        for field_name, ctrl in self.config_controls.items():
+            if isinstance(ctrl, wx.CheckBox):
+                gen_kwargs[field_name] = ctrl.GetValue()
+            elif isinstance(ctrl, wx.SpinCtrlDouble):
+                val = ctrl.GetValue()
+                # Determine type from config
+                import dataclasses
+                field = next(f for f in dataclasses.fields(OmniVoiceGenerationConfig) if f.name == field_name)
+                if field.type == int:
+                    val = int(val)
+                elif field.type == float:
+                    val = float(val)
+                gen_kwargs[field_name] = val
+        
         settings = {
             "text": text,
             "ref_audio": ref_audio,
             "ref_text": ref_text,
-            "steps": self.steps.GetValue(),
-            "guidance": self.guidance.GetValue(),
-            "denoise": self.denoise.GetValue(),
-            "preprocess": self.preprocess.GetValue(),
-            "postprocess": self.postprocess.GetValue(),
-            "speed": self.speed.GetValue(),
-            "lang": self.lang.GetStringSelection(),
-            "t_shift": self.t_shift.GetValue(),
-            "position_temperature": self.position_temperature.GetValue(),
-            "class_temperature": self.class_temperature.GetValue(),
-            "layer_penalty_factor": self.layer_penalty_factor.GetValue()
+            **gen_kwargs
         }
 
         threading.Thread(
@@ -355,7 +363,7 @@ class MainFrame(wx.Frame):
             self.log_msg("-" * 40)
             self.log_msg(f"Iniciando proceso para: {Path(settings['ref_audio']).name}")
 
-            current_prompt_hash = f"{settings['ref_audio']}_{settings['ref_text']}_{settings['preprocess']}"
+            current_prompt_hash = f"{settings['ref_audio']}_{settings['ref_text']}_{settings['preprocess_prompt']}"
 
             # FASE 1: LECTURA Y PROMPT (AHORA CON INFERENCE_MODE)
             if self.cached_prompt_hash == current_prompt_hash and self.cached_prompt is not None:
@@ -385,7 +393,7 @@ class MainFrame(wx.Frame):
                     prompt = self.model.create_voice_clone_prompt(
                         ref_audio=(wav_tensor, target_sr),
                         ref_text=settings['ref_text'],
-                        preprocess_prompt=settings['preprocess']
+                        preprocess_prompt=settings['preprocess_prompt']
                     )
                 self.log_msg(f"  -> Tokenización en GPU (Higgs) SIN GRADIENTES completada en {time.time()-t0:.3f}s")
                 
@@ -396,17 +404,11 @@ class MainFrame(wx.Frame):
                 self.cached_prompt_hash = current_prompt_hash
 
             # FASE 2: SÍNTESIS
-            config = OmniVoiceGenerationConfig(
-                num_step=settings['steps'],
-                guidance_scale=settings['guidance'],
-                t_shift=settings['t_shift'],
-                layer_penalty_factor=settings['layer_penalty_factor'],
-                position_temperature=settings['position_temperature'],
-                class_temperature=settings['class_temperature'],
-                denoise=settings['denoise'],
-                preprocess_prompt=settings['preprocess'],
-                postprocess_output=settings['postprocess'],
-            )
+            # Construir el diccionario solo con los campos de la configuración
+            # Mapear "steps" a "num_step"
+            config_kwargs = {k: v for k, v in settings.items() if k not in ("text", "ref_audio", "ref_text", "speed", "lang", "steps")}
+            config_kwargs["num_step"] = settings["steps"]
+            config = OmniVoiceGenerationConfig(**config_kwargs)
 
             lang = settings['lang']
             lang = None if lang == "Auto" else lang
