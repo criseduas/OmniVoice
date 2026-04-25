@@ -37,6 +37,13 @@ os.makedirs(AUDIOS_DIR, exist_ok=True)
 AUDIO_EXTENSIONS = ('.wav', '.mp3', '.flac', '.ogg', '.m4a')
 ALL_LANGS = ["Auto"] + sorted(lang_display_name(n) for n in LANG_NAMES)
 
+# Tokens paralingüísticos
+TAG_CHOICES = [
+    "[laughter]", "[sigh]", "[confirmation-en]", "[question-en]",
+    "[question-ah]", "[question-oh]", "[question-ei]", "[question-yi]",
+    "[surprise-ah]", "[surprise-oh]", "[surprise-wa]", "[surprise-yo]", "[dissatisfaction-hnn]",
+]
+
 # ---------------- NVDA ----------------
 class NVDAController:
     def __init__(self):
@@ -75,10 +82,38 @@ def read_txt_safe(path):
     except:
         return ""
 
+def to_waveform(audio_output):
+    obj = audio_output
+    while isinstance(obj, (list, tuple)):
+        if not obj:
+            raise ValueError("El modelo devolvió un contenedor de audio vacío")
+        obj = obj[0]
+
+    if hasattr(obj, "detach"):
+        arr = obj.detach().cpu().numpy()
+    else:
+        arr = np.asarray(obj)
+
+    arr = np.asarray(arr)
+    if arr.size == 0:
+        raise ValueError("El modelo devolvió un array de audio vacío")
+
+    arr = np.squeeze(arr)
+    if arr.ndim == 0:
+        arr = arr.reshape(1)
+    elif arr.ndim > 1:
+        time_axis = int(np.argmax(arr.shape))
+        if time_axis != arr.ndim - 1:
+            arr = np.moveaxis(arr, time_axis, -1)
+        arr = arr.reshape(-1, arr.shape[-1])
+        arr = arr.mean(axis=0) if arr.shape[0] <= 2 else arr[0]
+
+    return arr.astype(np.float32, copy=False)
+
 # ---------------- GUI PRINCIPAL ----------------
 class MainFrame(wx.Frame):
     def __init__(self):
-        super().__init__(None, title="OmniVoice GUI - Clonación de Voz", size=(950, 900))
+        super().__init__(None, title="OmniVoice GUI - Clonación de Voz", size=(950, 950))
         self.panel = wx.Panel(self)
         self.model = None
         self.model_loaded = False
@@ -103,7 +138,7 @@ class MainFrame(wx.Frame):
         self.status.SetFont(wx.Font(10, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
         main_sizer.Add(self.status, 0, wx.ALL, 10)
 
-        # --- Sección de voz y referencia (fija) ---
+        # --- Sección de voz y referencia ---
         main_sizer.Add(wx.StaticText(self.panel, label="Carpeta de voz (Speaker)"), 0, wx.ALL, 5)
         self.voice_choice = wx.Choice(self.panel)
         self.voice_choice.Bind(wx.EVT_CHOICE, self.on_voice)
@@ -121,6 +156,8 @@ class MainFrame(wx.Frame):
         # --- Texto a sintetizar ---
         main_sizer.Add(wx.StaticText(self.panel, label="Texto a sintetizar"), 0, wx.ALL, 5)
         self.text = wx.TextCtrl(self.panel, style=wx.TE_MULTILINE, size=(-1, 100))
+        self.text.Bind(wx.EVT_CONTEXT_MENU, self.on_text_context_menu)
+        self.text.Bind(wx.EVT_KEY_DOWN, self.on_text_key_down)  # Nuevo: capturar tecla de menú
         main_sizer.Add(self.text, 1, wx.EXPAND | wx.ALL, 10)
 
         # --- Parámetros generales ---
@@ -145,9 +182,29 @@ class MainFrame(wx.Frame):
         speed_sizer.Add(self.speed, 1, wx.EXPAND | wx.ALL, 5)
         general_sizer.Add(speed_sizer, 0, wx.EXPAND)
 
+        # Duración objetivo
+        dur_sizer = wx.BoxSizer(wx.HORIZONTAL)
+        dur_sizer.Add(wx.StaticText(self.panel, label="Duración (0=auto):"), 0, wx.ALL | wx.CENTER, 5)
+        self.duration = wx.SpinCtrlDouble(self.panel, value="0.0", min=0.0, max=60.0, inc=0.5)
+        self.duration.SetDigits(1)
+        dur_sizer.Add(self.duration, 1, wx.EXPAND | wx.ALL, 5)
+        general_sizer.Add(dur_sizer, 0, wx.EXPAND)
+
+        # Procesamiento por líneas
+        split_sizer = wx.BoxSizer(wx.HORIZONTAL)
+        self.split_lines = wx.CheckBox(self.panel, label="Procesar por líneas")
+        self.split_lines.SetToolTip("Divide el texto en líneas, genera cada una por separado y las une con una pausa.")
+        split_sizer.Add(self.split_lines, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 5)
+
+        split_sizer.Add(wx.StaticText(self.panel, label="Pausa (s):"), 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 5)
+        self.pause = wx.SpinCtrlDouble(self.panel, value="0.3", min=0.0, max=2.0, inc=0.1)
+        self.pause.SetDigits(1)
+        split_sizer.Add(self.pause, 1, wx.EXPAND | wx.ALL, 5)
+        general_sizer.Add(split_sizer, 0, wx.EXPAND)
+
         main_sizer.Add(general_sizer, 0, wx.EXPAND | wx.ALL, 5)
 
-        # --- Parámetros dinámicos de OmniVoiceGenerationConfig (excluyendo chunking) ---
+        # --- Parámetros de OmniVoiceGenerationConfig ---
         config_scroll = wx.ScrolledWindow(self.panel)
         config_scroll.SetScrollRate(0, 10)
         config_sizer = wx.BoxSizer(wx.VERTICAL)
@@ -156,7 +213,6 @@ class MainFrame(wx.Frame):
         config_inner = wx.StaticBoxSizer(config_box, wx.VERTICAL)
 
         import dataclasses
-        # Excluir parámetros de chunking (son internos del modelo)
         EXCLUDED_FIELDS = {'audio_chunk_duration', 'audio_chunk_threshold'}
         config_fields = [f for f in dataclasses.fields(OmniVoiceGenerationConfig) if f.name not in EXCLUDED_FIELDS]
 
@@ -192,7 +248,7 @@ class MainFrame(wx.Frame):
         self.btn.Bind(wx.EVT_BUTTON, self.on_generate)
         main_sizer.Add(self.btn, 0, wx.ALL | wx.CENTER, 10)
 
-        # --- Log de mensajes ---
+        # --- Log ---
         self.log = wx.TextCtrl(self.panel, style=wx.TE_MULTILINE | wx.TE_READONLY)
         main_sizer.Add(self.log, 1, wx.EXPAND | wx.ALL, 5)
 
@@ -212,6 +268,53 @@ class MainFrame(wx.Frame):
         wx.CallAfter(self.log.AppendText, msg + "\n")
         wx.CallAfter(self.log.SetInsertionPointEnd)
 
+    # -------- CAPTURA DE TECLAS PARA EL MENÚ CONTEXTUAL ----------
+    def on_text_key_down(self, event):
+        """Abre el menú contextual al pulsar la tecla de Aplicaciones o Shift+F10."""
+        key = event.GetKeyCode()
+        if key == wx.WXK_WINDOWS_MENU or (key == wx.WXK_F10 and event.ShiftDown()):
+            self._show_context_menu_at_caret()
+            return
+        event.Skip()
+
+    # -------- MENÚ CONTEXTUAL (UNIFICADO) ----------
+    def on_text_context_menu(self, event):
+        """Manejador oficial para clic derecho o eventos del sistema."""
+        pos = event.GetPosition()
+        if pos == wx.DefaultPosition:
+            self._show_context_menu_at_caret()
+        else:
+            self._popup_context_menu(pos)
+        # No se llama event.Skip() para evitar el menú por defecto
+
+    def _show_context_menu_at_caret(self):
+        """Calcula la posición del caret y muestra el menú ahí."""
+        caret_pos = self.text.PositionToCoords(self.text.GetInsertionPoint())
+        screen_pos = self.text.ClientToScreen(caret_pos)
+        self._popup_context_menu(screen_pos)
+
+    def _popup_context_menu(self, screen_pos):
+        """Construye y muestra el menú de emociones en screen_pos."""
+        menu = wx.Menu()
+        title_item = menu.Append(-1, "Insertar token...")
+        title_item.Enable(False)
+        menu.AppendSeparator()
+        for tag in TAG_CHOICES:
+            item = menu.Append(-1, tag)
+            self.Bind(wx.EVT_MENU, lambda evt, t=tag: self.insert_tag(t), item)
+        self.PopupMenu(menu, screen_pos)
+        menu.Destroy()
+
+    def insert_tag(self, tag):
+        """Inserta el token en la posición actual del cursor."""
+        pos = self.text.GetInsertionPoint()
+        current = self.text.GetValue()
+        new_text = current[:pos] + tag + current[pos:]
+        self.text.SetValue(new_text)
+        self.text.SetInsertionPoint(pos + len(tag))
+        self.text.SetFocus()
+        nvda.speak(f"Insertado {tag}", True)
+
     # -------- MODELO --------
     def load_model_async(self):
         def run():
@@ -225,7 +328,6 @@ class MainFrame(wx.Frame):
                     load_asr=False
                 )
                 self.log_msg(f"Modelo cargado en {time.time()-start_load:.2f}s. Calentando GPU...")
-                # Warmup simple y rápido como el original
                 with torch.inference_mode():
                     _ = self.model.generate(
                         text="hola",
@@ -301,7 +403,6 @@ class MainFrame(wx.Frame):
             self.log_msg("❌ ERROR: El cuadro 'Texto del audio de referencia' está vacío.")
             return
 
-        # Recolectar valores de los controles dinámicos
         config_kwargs = {}
         for field_name, ctrl in self.config_controls.items():
             if isinstance(ctrl, wx.CheckBox):
@@ -314,27 +415,29 @@ class MainFrame(wx.Frame):
         language = self.lang.GetStringSelection()
         language = None if language == "Auto" else language
         speed_val = self.speed.GetValue()
+        duration_val = self.duration.GetValue()
+        split = self.split_lines.GetValue()
+        pause_val = self.pause.GetValue()
 
         self.btn.Disable()
         self.btn.SetLabel("Generando... Espera")
 
         threading.Thread(
             target=self.run_gen_with_retry,
-            args=(text, ref_audio, ref_text, language, speed_val, config_kwargs),
+            args=(text, ref_audio, ref_text, language, speed_val, duration_val, split, pause_val, config_kwargs),
             daemon=True
         ).start()
 
-    def run_gen_with_retry(self, text, ref_audio, ref_text, language, speed_val, config_kwargs):
+    def run_gen_with_retry(self, text, ref_audio, ref_text, language, speed_val, duration_val, split, pause_val, config_kwargs):
         try:
-            self.run_gen(text, ref_audio, ref_text, language, speed_val, config_kwargs)
+            self.run_gen(text, ref_audio, ref_text, language, speed_val, duration_val, split, pause_val, config_kwargs)
         except torch.cuda.OutOfMemoryError as e:
             self.log_msg(f"⚠️ Error de memoria: {str(e)}. Reintentando con chunking más pequeño...")
             torch.cuda.empty_cache()
-            # Reducir temporalmente audio_chunk_threshold (parámetro interno)
             original_threshold = config_kwargs.get("audio_chunk_threshold", 30.0)
             config_kwargs["audio_chunk_threshold"] = 15.0
             try:
-                self.run_gen(text, ref_audio, ref_text, language, speed_val, config_kwargs)
+                self.run_gen(text, ref_audio, ref_text, language, speed_val, duration_val, split, pause_val, config_kwargs)
             except Exception as e2:
                 self.log_msg(f"❌ También falló con chunking pequeño: {str(e2)}")
                 nvda.speak("Error persistente de memoria", True)
@@ -346,21 +449,19 @@ class MainFrame(wx.Frame):
         finally:
             wx.CallAfter(self.btn.Enable)
             wx.CallAfter(self.btn.SetLabel, "Generar audio")
-            # Limpiar caché CUDA después de cada generación
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
                 torch.cuda.synchronize()
 
-    def run_gen(self, text, ref_audio, ref_text, language, speed_val, config_kwargs):
+    def run_gen(self, text, ref_audio, ref_text, language, speed_val, duration_val, split, pause_val, config_kwargs):
         nvda.speak("Generando audio. Por favor espera.", True)
         self.log_msg("-" * 40)
         self.log_msg(f"Iniciando para: {Path(ref_audio).name}")
 
-        # Construir hash para caché (incluye preprocess_prompt del config)
         pp = config_kwargs.get("preprocess_prompt", True)
         current_hash = f"{ref_audio}_{ref_text}_{pp}"
 
-        # ----- FASE 1: Crear o recuperar prompt de clonación -----
+        # Prompt
         if self.cached_prompt_hash == current_hash and self.cached_prompt is not None:
             self.log_msg("⚡ Usando caché de características de voz")
             prompt = self.cached_prompt
@@ -378,34 +479,66 @@ class MainFrame(wx.Frame):
             self.cached_prompt = prompt
             self.cached_prompt_hash = current_hash
 
-        # ----- FASE 2: Generar audio -----
         gen_config = OmniVoiceGenerationConfig(**config_kwargs)
+        sampling_rate = self.model.sampling_rate
 
-        self.log_msg(f"Iniciando síntesis (steps={gen_config.num_step})...")
-        t_gen = time.time()
-        with torch.inference_mode():
-            audio_output = self.model.generate(
-                text=text,
-                voice_clone_prompt=prompt,
-                generation_config=gen_config,
-                language=language,
-                speed=speed_val,
-            )
-        t_gen = time.time() - t_gen
-        self.log_msg(f"✔️ Síntesis completada en {t_gen:.2f}s")
+        if split:
+            lines = [line.strip() for line in text.split('\n') if line.strip()]
+            if not lines:
+                lines = [text]
+            self.log_msg(f"Generando {len(lines)} líneas por separado con pausa de {pause_val}s")
+            all_audio = []
+            t_gen_total = 0.0
+            for i, line in enumerate(lines, 1):
+                self.log_msg(f"Línea {i}/{len(lines)}: '{line[:40]}...'" if len(line) > 40 else f"Línea {i}/{len(lines)}: '{line}'")
+                t_line = time.time()
+                with torch.inference_mode():
+                    audio_out = self.model.generate(
+                        text=line,
+                        voice_clone_prompt=prompt,
+                        generation_config=gen_config,
+                        language=language,
+                        speed=speed_val,
+                        duration=duration_val if duration_val > 0 else None,
+                    )
+                t_line = time.time() - t_line
+                t_gen_total += t_line
+                all_audio.append(to_waveform(audio_out))
 
-        # ----- FASE 3: Guardar y reproducir (conversión eficiente) -----
-        wave = audio_output[0]
-        sr_out = self.model.sampling_rate
+            if pause_val > 0:
+                silence = np.zeros(int(pause_val * sampling_rate), dtype=np.float32)
+                merged = all_audio[0]
+                for seg in all_audio[1:]:
+                    merged = np.concatenate([merged, silence, seg])
+            else:
+                merged = np.concatenate(all_audio)
+            wave = merged
+            t_gen = t_gen_total
+            self.log_msg(f"✔️ Síntesis por líneas completada en {t_gen:.2f}s")
+        else:
+            self.log_msg(f"Iniciando síntesis (steps={gen_config.num_step})...")
+            t_gen = time.time()
+            with torch.inference_mode():
+                audio_output = self.model.generate(
+                    text=text,
+                    voice_clone_prompt=prompt,
+                    generation_config=gen_config,
+                    language=language,
+                    speed=speed_val,
+                    duration=duration_val if duration_val > 0 else None,
+                )
+            t_gen = time.time() - t_gen
+            self.log_msg(f"✔️ Síntesis completada en {t_gen:.2f}s")
+            wave = to_waveform(audio_output)
+
         wave_int16 = (wave * 32767).clip(-32768, 32767).astype(np.int16)
-
         filename = f"out_{int(time.time())}.wav"
         out_path = AUDIOS_DIR / filename
-        sf.write(out_path, wave_int16, sr_out)
+        sf.write(out_path, wave_int16, sampling_rate)
 
         total = t_prompt + t_gen
         self.log_msg(f"✅ Éxito! Tiempo TOTAL: {total:.2f}s -> {filename}")
-        sd.play(wave, sr_out)
+        sd.play(wave, sampling_rate)
         sd.wait()
         nvda.speak("Audio generado y reproducido.", True)
 
